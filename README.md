@@ -1,6 +1,6 @@
 # >_ asdMASK
 
-![asdMASK Icon](./asdMASK icon.png)
+![asdMASK Icon](./asdMASK-icon.png)
 
 
 A macOS app to hide or unhide Ableton `.asd` files — keeping your folders clean without deleting.
