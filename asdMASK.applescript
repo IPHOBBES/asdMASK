@@ -72,10 +72,13 @@ on run
 		set saveChoice to display alert "Do you want to save the list of processed files to a text file?" buttons {"Yes", "No"} default button "Yes" cancel button "No"
 		
 		if button returned of saveChoice is "Yes" then
-			-- Set the file path to save the list (Desktop folder and file name depending on action)
-			set fileName to "hidden_asd.txt"
-			if fileAction is "Unhide .asd Files" then
-				set fileName to "unhidden_asd.txt"
+			-- Add a timestamp to keep each run unique
+			set timeStamp to do shell script "date +%Y-%m-%d_%H-%M-%S"
+			
+			if fileAction is "Hide .asd Files" then
+				set fileName to "hidden_asd_" & timeStamp & ".txt"
+			else if fileAction is "Unhide .asd Files" then
+				set fileName to "unhidden_asd_" & timeStamp & ".txt"
 			end if
 			
 			set filePath to (POSIX path of (path to desktop)) & fileName
@@ -90,4 +93,4 @@ on run
 			end try
 		end if
 	end if
-end run 
+end run
