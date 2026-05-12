@@ -1,96 +1,202 @@
--- asdMASK Control Script
--- This script provides functionality to hide/unhide .asd files in specific folders or all mounted volumes
+-- asdMASK Control Script v5
+-- Hide / unhide .asd files in a specific folder or selected mounted drives
+-- Adds start/finish notifications for a nicer UX
 
 on run
-	-- First step: Ask whether the user wants to process files in a specific folder or all mounted volumes
+	-- Step 1: Ask scope
 	try
-		set locationChoice to display alert "Choose the scope for processing .asd files:" buttons {"Specific Folder", "All Mounted Drives", "Cancel"} default button "Specific Folder" cancel button "Cancel"
+		set locationChoice to display alert "Choose the scope for processing .asd files:" buttons {"Specific Folder", "Choose Mounted Drive(s)", "Cancel"} default button "Specific Folder" cancel button "Cancel"
 	on error
-		return -- Exit the script if Cancel is pressed
+		return
 	end try
 	
 	set locationAction to button returned of locationChoice
 	
-	-- Second step: Ask whether the user wants to hide or unhide .asd files
+	-- Step 2: Ask action
 	try
 		set actionChoice to display alert "Do you want to hide or unhide .asd files?" buttons {"Hide .asd Files", "Unhide .asd Files", "Cancel"} default button "Hide .asd Files" cancel button "Cancel"
 	on error
-		return -- Exit the script if Cancel is pressed
+		return
 	end try
 	
 	set fileAction to button returned of actionChoice
 	
-	-- If user selects "In Folder"
+	-- Step 3: Build target paths
+	set targetPaths to {}
+	set targetNames to {}
+	
 	if locationAction is "Specific Folder" then
-		-- Prompt the user to select a folder
-		set chosenFolder to choose folder with prompt "Select a folder to process .asd files:"
-		set folderPath to quoted form of POSIX path of chosenFolder -- Properly quote the folder path
-	else if locationAction is "All Mounted Drives" then
-		-- Get the list of all mounted volumes, excluding the system volume
-		set allVolumes to paragraphs of (do shell script "ls /Volumes")
+		try
+			set chosenFolder to choose folder with prompt "Select a folder to process .asd files:"
+			set end of targetPaths to POSIX path of chosenFolder
+			set end of targetNames to name of (info for chosenFolder)
+		on error
+			return
+		end try
 		
-		-- Initialize an empty string for folder paths
-		set folderPath to ""
+	else if locationAction is "Choose Mounted Drive(s)" then
+		set volumeChoices to my getMountedVolumes()
 		
-		-- Loop through all volumes and append them to the folderPath string
-		repeat with volumeName in allVolumes
-			set folderPath to folderPath & quoted form of ("/Volumes/" & volumeName) & " "
+		if volumeChoices is {} then
+			display alert "No Mounted Drives Found" message "There are no mounted drives available to process." buttons {"OK"} default button "OK"
+			return
+		end if
+		
+		try
+			set selectedVolumes to choose from list volumeChoices with prompt "Select one or more mounted drives to process:" with multiple selections allowed default items {}
+		on error
+			return
+		end try
+		
+		if selectedVolumes is false then return
+		
+		repeat with volumeName in selectedVolumes
+			set end of targetPaths to "/Volumes/" & volumeName
+			set end of targetNames to (contents of volumeName)
 		end repeat
 	end if
 	
-	-- Determine whether to hide or unhide and initialize list for processed files
-	set processedFiles to "" -- To store the list of processed files
-	if fileAction is "Hide .asd Files" then
-		-- Check if there are any files that are NOT hidden
-		set asdFilesCount to do shell script "find " & folderPath & " -type f -name '*.asd' ! -flags hidden | wc -l"
-		set asdFilesCount to asdFilesCount as integer -- Convert to integer for comparison
-		
-		if asdFilesCount is 0 then
-			display alert "No Files to Hide" message "There are no .asd files to hide in the selected location." buttons {"OK"} default button "OK"
-		else
-			-- Hide the files and collect the list of files hidden
-			set processedFiles to do shell script "find " & folderPath & " -type f -name '*.asd' ! -flags hidden -exec chflags hidden {} \\; -print"
-			display alert "Process Completed" message (asdFilesCount as string) & " .asd files have been hidden." buttons {"OK"} default button "OK"
-		end if
-		
-	else if fileAction is "Unhide .asd Files" then
-		-- Check if there are any files that are hidden
-		set asdFilesCount to do shell script "find " & folderPath & " -type f -name '*.asd' -flags hidden | wc -l"
-		set asdFilesCount to asdFilesCount as integer -- Convert to integer for comparison
-		
-		if asdFilesCount is 0 then
-			display alert "No Files to Unhide" message "There are no .asd files to unhide in the selected location." buttons {"OK"} default button "OK"
-		else
-			-- Unhide the files and collect the list of files unhidden
-			set processedFiles to do shell script "find " & folderPath & " -type f -name '*.asd' -flags hidden -exec chflags nohidden {} \\; -print"
-			display alert "Process Completed" message (asdFilesCount as string) & " .asd files have been unhidden." buttons {"OK"} default button "OK"
-		end if
+	if targetPaths is {} then return
+	
+	-- Step 4: Warn user before long processing
+	set targetCount to count of targetPaths
+	
+	if targetCount is 1 then
+		set scopeText to item 1 of targetNames
+	else
+		set scopeText to (targetCount as string) & " selected locations"
 	end if
 	
-	-- Prompt the user if they want to save the list of processed files to a text file
-	if processedFiles is not "" then
-		set saveChoice to display alert "Do you want to save the list of processed files to a text file?" buttons {"Yes", "No"} default button "Yes" cancel button "No"
+	try
+		display alert "Ready to Process" message "The script is about to process " & scopeText & "." & return & return & "This may take a while on large drives or network volumes." buttons {"Continue", "Cancel"} default button "Continue" cancel button "Cancel"
+	on error
+		return
+	end try
+	
+	-- Step 5: Start notification
+	if fileAction is "Hide .asd Files" then
+		display notification "Processing has started for " & scopeText & "." with title "asdMASK" subtitle "Hiding .asd files"
+	else
+		display notification "Processing has started for " & scopeText & "." with title "asdMASK" subtitle "Unhiding .asd files"
+	end if
+	
+	-- Step 6: Temporary report file
+	set tempReportFile to do shell script "mktemp /tmp/asdmask_report.XXXXXX"
+	do shell script ": > " & quoted form of tempReportFile
+	
+	set totalCount to 0
+	set processedTargets to 0
+	
+	-- Step 7: Process each target
+	repeat with i from 1 to targetCount
+		set posixTarget to item i of targetPaths
+		set targetLabel to item i of targetNames
+		set quotedTarget to quoted form of posixTarget
 		
-		if button returned of saveChoice is "Yes" then
-			-- Add a timestamp to keep each run unique
-			set timeStamp to do shell script "date +%Y-%m-%d_%H-%M-%S"
-			
+		try
 			if fileAction is "Hide .asd Files" then
-				set fileName to "hidden_asd_" & timeStamp & ".txt"
+				set fileCount to do shell script "find " & quotedTarget & " -type f -name '*.asd' ! -flags hidden 2>/dev/null | wc -l | tr -d ' '"
+				set fileCount to fileCount as integer
+				
+				if fileCount > 0 then
+					do shell script "find " & quotedTarget & " -type f -name '*.asd' ! -flags hidden -exec chflags hidden {} \\; -print 2>/dev/null >> " & quoted form of tempReportFile
+				end if
+				
 			else if fileAction is "Unhide .asd Files" then
-				set fileName to "unhidden_asd_" & timeStamp & ".txt"
+				set fileCount to do shell script "find " & quotedTarget & " -type f -name '*.asd' -flags hidden 2>/dev/null | wc -l | tr -d ' '"
+				set fileCount to fileCount as integer
+				
+				if fileCount > 0 then
+					do shell script "find " & quotedTarget & " -type f -name '*.asd' -flags hidden -exec chflags nohidden {} \\; -print 2>/dev/null >> " & quoted form of tempReportFile
+				end if
 			end if
 			
-			set filePath to (POSIX path of (path to desktop)) & fileName
+			set totalCount to totalCount + fileCount
+			set processedTargets to processedTargets + 1
 			
-			-- Save the processed files to the text file
-			try
-				-- Use 'printf' instead of 'echo' to handle newlines and file paths better
-				do shell script "printf '%s\n' " & quoted form of processedFiles & " > " & quoted form of filePath
-				display alert "Text File Saved" message "The list of processed files has been saved to your desktop as " & fileName buttons {"OK"} default button "OK"
-			on error errMsg
-				display alert "Error" message "An error occurred while saving the file: " & errMsg buttons {"OK"} default button "OK"
-			end try
+		on error errMsg
+			display alert "Error" message "An error occurred while processing:" & return & targetLabel & return & return & errMsg buttons {"OK"} default button "OK"
+		end try
+	end repeat
+	
+	-- Step 8: If nothing processed, clean up and stop
+	if totalCount is 0 then
+		do shell script "rm -f " & quoted form of tempReportFile
+		
+		if fileAction is "Hide .asd Files" then
+			display notification "No .asd files needed hiding." with title "asdMASK" subtitle "Finished"
+			display alert "No Files to Hide" message "There are no .asd files to hide in the selected location." buttons {"OK"} default button "OK"
+		else
+			display notification "No .asd files needed unhiding." with title "asdMASK" subtitle "Finished"
+			display alert "No Files to Unhide" message "There are no .asd files to unhide in the selected location." buttons {"OK"} default button "OK"
+		end if
+		
+		return
+	end if
+	
+	-- Step 9: Ask about report only after real processing
+	set saveReport to false
+	try
+		set saveChoice to display alert "Do you want to save the list of processed files to a text file?" buttons {"Yes", "No"} default button "Yes" cancel button "No"
+		if button returned of saveChoice is "Yes" then set saveReport to true
+	on error
+		set saveReport to false
+	end try
+	
+	if saveReport then
+		set timeStamp to do shell script "date +%Y-%m-%d_%H-%M-%S"
+		
+		if fileAction is "Hide .asd Files" then
+			set reportFileName to "hidden_asd_" & timeStamp & ".txt"
+		else
+			set reportFileName to "unhidden_asd_" & timeStamp & ".txt"
+		end if
+		
+		set reportFilePath to (POSIX path of (path to desktop)) & reportFileName
+		
+		try
+			do shell script "cp " & quoted form of tempReportFile & " " & quoted form of reportFilePath
+			do shell script "rm -f " & quoted form of tempReportFile
+			
+			if fileAction is "Hide .asd Files" then
+				display notification ((totalCount as string) & " .asd files hidden.") with title "asdMASK" subtitle "Finished"
+				display alert "Process Completed" message ((totalCount as string) & " .asd files have been hidden across " & (processedTargets as string) & " location(s)." & return & return & "The list of processed files has been saved to your desktop as " & reportFileName) buttons {"OK"} default button "OK"
+			else
+				display notification ((totalCount as string) & " .asd files unhidden.") with title "asdMASK" subtitle "Finished"
+				display alert "Process Completed" message ((totalCount as string) & " .asd files have been unhidden across " & (processedTargets as string) & " location(s)." & return & return & "The list of processed files has been saved to your desktop as " & reportFileName) buttons {"OK"} default button "OK"
+			end if
+			
+		on error errMsg
+			do shell script "rm -f " & quoted form of tempReportFile
+			display alert "Error" message "An error occurred while saving the file: " & errMsg buttons {"OK"} default button "OK"
+		end try
+	else
+		do shell script "rm -f " & quoted form of tempReportFile
+		
+		if fileAction is "Hide .asd Files" then
+			display notification ((totalCount as string) & " .asd files hidden.") with title "asdMASK" subtitle "Finished"
+			display alert "Process Completed" message ((totalCount as string) & " .asd files have been hidden across " & (processedTargets as string) & " location(s).") buttons {"OK"} default button "OK"
+		else
+			display notification ((totalCount as string) & " .asd files unhidden.") with title "asdMASK" subtitle "Finished"
+			display alert "Process Completed" message ((totalCount as string) & " .asd files have been unhidden across " & (processedTargets as string) & " location(s).") buttons {"OK"} default button "OK"
 		end if
 	end if
 end run
+
+on getMountedVolumes()
+	try
+		set volumeList to paragraphs of (do shell script "find /Volumes -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null | sed 's#^/Volumes/##' | sort")
+		set cleanedList to {}
+		
+		repeat with volumeName in volumeList
+			set volumeName to contents of volumeName
+			if volumeName is not "" and volumeName is not "EFI" and volumeName does not start with "." then
+				set end of cleanedList to volumeName
+			end if
+		end repeat
+		
+		return cleanedList
+	on error
+		return {}
+	end try
+end getMountedVolumes
